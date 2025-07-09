@@ -1,4 +1,5 @@
 🌿 Mangrove Mapping and Quality Assessment Using Sentinel-2 Imagery
+
 A Google Earth Engine (GEE) script designed for extracting and assessing mangrove ecosystems from Land Use/Land Cover (LULC) classifications based on Sentinel-2 satellite imagery. This tool enables automated identification of mangrove areas and evaluates their health, supporting coastal ecosystem monitoring and management.
 
 🚀 Features
