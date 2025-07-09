@@ -31,3 +31,4 @@ Outputs classification and analysis results as raster (GeoTIFF) and vector (Shap
 
 📌 Sampling Guidelines
 Training sample collection follows Campbell (2002), which recommends a minimum of 100 pixels per class, evenly distributed across the study area to ensure reliable classification accuracy.
+
