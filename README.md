@@ -32,3 +32,8 @@ Outputs classification and analysis results as raster (GeoTIFF) and vector (Shap
 📌 Sampling Guidelines
 Training sample collection follows Campbell (2002), which recommends a minimum of 100 pixels per class, evenly distributed across the study area to ensure reliable classification accuracy.
 
+![alt text](https://github.com/sylpurnama/-Mangrove-Extraction-from-LULC-Classification-using-Sentinel-2-Imagery-/blob/main/1.png)
+
+![alt text](https://github.com/sylpurnama/-Mangrove-Extraction-from-LULC-Classification-using-Sentinel-2-Imagery-/blob/main/2.png)
+
+![alt text](https://github.com/sylpurnama/-Mangrove-Extraction-from-LULC-Classification-using-Sentinel-2-Imagery-/blob/main/3.png)
