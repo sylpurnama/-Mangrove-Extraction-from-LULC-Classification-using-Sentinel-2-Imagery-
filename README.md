@@ -1,4 +1,4 @@
-"Mangrove Mapping and Quality Assessment Using Sentinel-2 Imagery"
+Mangrove Mapping and Quality Assessment Using Sentinel-2 Imagery"
 A comprehensive Google Earth Engine script for mangrove ecosystem mapping, extraction, and quality assessment using Sentinel-2 satellite imagery. This tool provides automated mangrove detection, morphological analysis, and health monitoring capabilities for coastal management applications.
 🌿 Features
 Core Functionality
