@@ -1,0 +1,391 @@
+///////////////////////////////////////////////////////////////
+/////******* ANALISIS CITRA SENTINEL-2 DI BALI ******** /////
+/////Data Satellite Imagery Analysis ///////////////////
+/////////////////////////////////////////////////////////////// 
+
+// ================== BAGIAN 1: SETUP AOI ================== //
+print('=== MEMULAI ANALISIS CITRA SENTINEL-2 ===');
+
+// Load AOI dari asset
+var AOI = ee.FeatureCollection('projects/plasma-matter-439103-a9/assets/AOI_Bali');
+Map.centerObject(AOI, 12);
+
+// Tampilkan AOI di map
+Map.addLayer(AOI, {color: 'red', strokeWidth: 2}, 'Area of Interest - Bali');
+
+// ================== BAGIAN 2: PARAMETER ANALISIS ================== //
+var startDate = '2025-01-01';
+var endDate = '2025-07-07';
+var maxCloudCover = 20; // Maksimal cloud cover yang diizinkan (%)
+
+print('Periode analisis:', startDate, 'hingga', endDate);
+print('Maksimal cloud cover:', maxCloudCover + '%');
+
+// ================== BAGIAN 3: AKUISISI DATA SENTINEL-2 ================== //
+
+// Koleksi citra Sentinel-2 Surface Reflectance harmonized
+var dataset_raw = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+  .filterDate(startDate, endDate)
+  .filterBounds(AOI);
+
+// Menampilkan informasi dasar dataset
+print('Jumlah total citra tersedia:', dataset_raw.size());
+
+// Mendapatkan daftar tanggal citra
+var dates = dataset_raw.aggregate_array('system:time_start')
+  .map(function(date) {
+    return ee.Date(date).format('YYYY-MM-dd');
+  });
+
+print('Tanggal citra tersedia:', dates);
+
+// ================== BAGIAN 4: ANALISIS CLOUD COVER ================== // 
+
+// Membuat informasi cloud cover untuk setiap citra
+var cloudFeatures = dataset_raw.map(function(image) {
+  return ee.Feature(null, {
+    'system:time_start': image.get('system:time_start'),
+    'date': ee.Date(image.get('system:time_start')).format('YYYY-MM-dd'),
+    'cloud_cover': image.get('CLOUDY_PIXEL_PERCENTAGE')
+  });
+});
+
+// Menampilkan daftar tanggal dan cloud cover
+var cloudInfoFC = ee.FeatureCollection(cloudFeatures);
+print('Informasi cloud cover per citra:', cloudInfoFC);
+
+// Filter citra dengan cloud cover rendah
+var dataset_filtered = dataset_raw.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', maxCloudCover));
+print('Jumlah citra dengan cloud cover <', maxCloudCover + '%:', dataset_filtered.size());
+
+// Membuat grafik time series cloud cover
+var cloudTimeSeries = ui.Chart.feature.byFeature(cloudFeatures, 'system:time_start', 'cloud_cover')
+  .setOptions({
+    title: 'Grafik Kondisi Awan pada Data Sentinel-2 (Bali)',
+    hAxis: {
+      title: 'Tanggal',
+      format: 'yyyy-MM-dd',
+      gridlines: {count: 10}
+    },
+    vAxis: {
+      title: 'Persentase Cloud Cover (%)',
+      viewWindow: {min: 0, max: 100}
+    },
+    pointSize: 5,
+    lineWidth: 2,
+    colors: ['#1f77b4'],
+    backgroundColor: '#f8f9fa'
+  });
+
+print(cloudTimeSeries);
+
+// ================== BAGIAN 5: FUNGSI CLOUD MASKING ================== //
+
+// Fungsi untuk menghilangkan awan menggunakan QA60 band
+function maskS2clouds(image) {
+  var qa = image.select('QA60');  // Mengambil band QA60 (Quality Assessment)
+
+  // Definisi bitmask untuk deteksi awan
+  var cloudBitMask = 1 << 10;     // Bit ke-10 untuk deteksi awan opaque
+  var cirrusBitMask = 1 << 11;    // Bit ke-11 untuk deteksi cirrus
+
+  // Pembuatan mask: pixel yang tidak berawan
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)    // Tidak ada awan opaque
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));   // Tidak ada cirrus
+
+  // Aplikasi mask dan normalisasi reflektansi (dari DN ke reflektansi 0-1)
+  return image.updateMask(mask).divide(10000);
+}
+
+// ================== BAGIAN 6: PEMROSESAN CITRA ================== //
+
+// Aplikasi cloud masking pada koleksi citra
+var S2_collection = dataset_filtered.map(maskS2clouds);
+
+// Membuat composite median dari koleksi citra
+var S2 = S2_collection.median().clip(AOI);
+
+print('Citra composite berhasil dibuat');
+
+// ================== BAGIAN 7: VISUALISASI CITRA ================== //
+
+// Parameter visualisasi untuk True Color Composite (TCC)
+var visRGB_TCC = {
+  min: 0.0,
+  max: 0.3,
+  bands: ['B4', 'B3', 'B2'],  // Red, Green, Blue
+  gamma: 1.2
+};
+
+// Parameter visualisasi untuk False Color Composite (FCC)
+var visRGB_FCC = {
+  min: 0.0,
+  max: 0.3,
+  bands: ['B8A', 'B11', 'B4'],  // NIR, SWIR1, Red
+  gamma: 1.2
+};
+
+// Menampilkan citra dalam berbagai komposisi
+Map.addLayer(S2, visRGB_TCC, 'True Color Composite (TCC)');
+Map.addLayer(S2, visRGB_FCC, 'False Color Composite (FCC)', false);
+
+// Export citra composite ke Google Drive
+Export.image.toDrive({
+  image: S2,
+  description: 'Bali_S2_Composite',
+  folder: 'GEE_Exports',
+  region: AOI,
+  scale: 10,
+  maxPixels: 1e9,
+  fileFormat: 'GeoTIFF'
+});
+
+// ================== BAGIAN 8: ANALISIS INDEKS VEGETASI ================== //
+
+// Perhitungan NDVI (Normalized Difference Vegetation Index)
+var NDVI = S2.expression("(NIR - RED) / (NIR + RED)", {
+  RED: S2.select("B4"),    // Band Red
+  NIR: S2.select("B8"),    // Band Near Infrared
+}).rename('NDVI');
+
+// Perhitungan SAVI (Soil Adjusted Vegetation Index)
+var L = 0.5; // Faktor koreksi tanah
+var SAVI = S2.expression("((NIR - RED) / (NIR + RED + L)) * (1 + L)", {
+  RED: S2.select("B4"),
+  NIR: S2.select("B8"),
+  L: L
+}).rename('SAVI');
+
+// Perhitungan NDWI (Normalized Difference Water Index)
+var NDWI = S2.expression("(GREEN - NIR) / (GREEN + NIR)", {
+  GREEN: S2.select("B3"),  // Band Green
+  NIR: S2.select("B8")     // Band Near Infrared
+}).rename('NDWI');
+
+// ================== BAGIAN 9: VISUALISASI INDEKS ================== //
+
+// Parameter visualisasi untuk NDVI
+var visNDVI = {
+  min: -1, 
+  max: 1, 
+  palette: ['#d73027', '#f46d43', '#fdae61', '#fee08b', '#e6f598', '#abd9e9', '#74add1', '#4575b4']
+};
+
+// Parameter visualisasi untuk SAVI
+var visSAVI = {
+  min: -1, 
+  max: 1, 
+  palette: ['#8c510a', '#bf812d', '#dfc27d', '#f6e8c3', '#c7eae5', '#80cdc1', '#35978f', '#01665e']
+};
+
+// Parameter visualisasi untuk NDWI
+var visNDWI = {
+  min: -1, 
+  max: 1, 
+  palette: ['#543005', '#8c510a', '#bf812d', '#dfc27d', '#f6e8c3', '#c7eae5', '#80cdc1', '#35978f', '#01665e', '#003c30']
+};
+
+// Menampilkan indeks vegetasi
+Map.addLayer(NDVI, visNDVI, 'NDVI (Normalized Difference Vegetation Index)');
+Map.addLayer(SAVI, visSAVI, 'SAVI (Soil Adjusted Vegetation Index)', false);
+Map.addLayer(NDWI, visNDWI, 'NDWI (Normalized Difference Water Index)', false);
+
+// ================== BAGIAN 10: STATISTIK INDEKS ================== //
+
+// Menghitung statistik NDVI
+var ndviStats = NDVI.reduceRegion({
+  reducer: ee.Reducer.mean().combine({
+    reducer2: ee.Reducer.minMax(),
+    sharedInputs: true
+  }),
+  geometry: AOI,
+  scale: 30,
+  maxPixels: 1e9
+});
+
+print('Statistik NDVI:', ndviStats);
+
+// Menghitung histogram NDVI
+var ndviHistogram = ui.Chart.image.histogram(NDVI, AOI, 30)
+  .setOptions({
+    title: 'Histogram NDVI - Area Bali',
+    hAxis: {title: 'Nilai NDVI'},
+    vAxis: {title: 'Frekuensi Pixel'},
+    colors: ['#1f77b4']
+  });
+
+print(ndviHistogram);
+
+
+// ================== BAGIAN 11: KLASIFIKASI TUTUPAN LAHAN ================== //
+
+// Definisi band yang akan digunakan untuk klasifikasi
+var bands = ['B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B11', 'B12'];
+
+// Menambahkan indeks vegetasi ke dalam band yang akan digunakan
+var S2_withIndices = S2.addBands(NDVI).addBands(SAVI).addBands(NDWI);
+
+// Update band list untuk termasuk indeks
+var bandsWithIndices = bands.concat(['NDVI', 'SAVI', 'NDWI']);
+
+
+//***********KETERANGAN ID LULC***********//
+//  0: Tubuh Air
+//  1: Vegetasi Non-Mangrove
+//  2: Mangroves
+//  3: Lahan Terbangun
+//  4: Lahan Terbuka
+
+// Load data pelatihan dari Asset (FeatureCollection berisi label)
+var trainingAsset = ee.FeatureCollection("projects/plasma-matter-439103-a9/assets/Sampel_Point");
+
+// Ekstrak nilai piksel dari citra berdasarkan titik training
+var training = S2_withIndices.select(bandsWithIndices).sampleRegions({
+  collection: trainingAsset,
+  properties: ['id'], // pastikan ada field "id" di dalam asset
+  scale: 10
+});
+ 
+print('Jumlah sampel training:', training.size());
+
+// Latih classifier (Random Forest)
+var classifier = ee.Classifier.smileRandomForest(50).train({
+  features: training,
+  classProperty: 'id', 
+  inputProperties: bandsWithIndices
+});
+
+// Klasifikasikan citra
+var classified = S2_withIndices.select(bandsWithIndices).classify(classifier);
+
+// Parameter visualisasi untuk klasifikasi (sesuaikan dengan jumlah kelas)
+var classificationVis = {
+  min: 0,
+  max: 4, // Sesuaikan dengan jumlah kelas yang ada
+  palette: ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff']
+};
+
+// Tampilkan hasil klasifikasi
+Map.addLayer(classified, classificationVis, 'Klasifikasi Tutupan Lahan');
+
+
+// ================== BAGIAN 12: PERHITUNGAN AKURASI ================== //
+
+// Membagi data training untuk validasi (70% training, 30% testing)
+var withRandom = training.randomColumn('random');
+var split = 0.7;
+var trainingPartition = withRandom.filter(ee.Filter.lt('random', split));
+var testingPartition = withRandom.filter(ee.Filter.gte('random', split));
+
+// Latih ulang classifier dengan data training yang dibagi
+var trainedClassifier = ee.Classifier.smileRandomForest(50).train({
+  features: trainingPartition,
+  classProperty: 'id',
+  inputProperties: bandsWithIndices
+});
+
+// Klasifikasi data testing
+var test = testingPartition.classify(trainedClassifier);
+
+// Hitung confusion matrix
+var confusionMatrix = test.errorMatrix('id', 'classification');
+print('Confusion Matrix:', confusionMatrix);
+print('Overall Accuracy:', confusionMatrix.accuracy());
+print('Kappa Coefficient:', confusionMatrix.kappa());
+
+
+// ================== BAGIAN 13: EXPORT HASIL ================== //
+
+// Export citra klasifikasi ke Google Drive
+Export.image.toDrive({
+  image: classified,
+  description: 'Bali_LULC_Classification',
+  folder: 'GEE_Exports',
+  region: AOI,
+  scale: 10,
+  maxPixels: 1e9
+});
+
+// Export citra NDVI ke Google Drive
+Export.image.toDrive({
+  image: NDVI,
+  description: 'Bali_NDVI',
+  folder: 'GEE_Exports',
+  region: AOI,
+  scale: 10,
+  maxPixels: 1e9
+});
+
+
+print('=== ANALISIS SELESAI ===');
+print('Periksa tab "Tasks" untuk memulai proses export');
+
+// ================== BAGIAN 14: EKSTRAKSI OBJEK MANGROVE ================== //
+
+print('=== MEMULAI EKSTRAKSI MANGROVE ===');
+
+// Ekstrak piksel mangrove dari hasil klasifikasi (ID = 2)
+var mangrove = classified.eq(2);
+
+// Konversi ke binary mask (1 = mangrove, 0 = non-mangrove)
+var mangroveMask = mangrove.selfMask();
+
+// Parameter visualisasi untuk mangrove
+var mangroveVis = {
+  min: 0,
+  max: 1,
+  palette: ['#228B22'] // Hijau untuk mangrove
+};
+
+// Tampilkan mangrove di map
+Map.addLayer(mangroveMask, mangroveVis, 'Ekstraksi Mangrove');
+
+// ================== BAGIAN 15: ANALISIS AREA MANGROVE ================== //
+
+// Hitung luas area mangrove
+var mangroveArea = mangrove.multiply(ee.Image.pixelArea()).reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: AOI,
+  scale: 10,
+  maxPixels: 1e9
+});
+
+// Konversi dari m² ke hektar
+var mangroveAreaHa = ee.Number(mangroveArea.get('classification')).divide(10000);
+
+print('Luas area mangrove (hektar):', mangroveAreaHa);
+
+// ================== BAGIAN 16: MORFOLOGI DAN FILTERING ================== //
+
+// Morphological operations untuk membersihkan noise
+var kernel = ee.Kernel.circle({radius: 1});
+
+// Erosion untuk menghilangkan pixel kecil
+var mangroveEroded = mangroveMask.focal_min({
+  kernel: kernel,
+  iterations: 1
+});
+
+// Dilation untuk mengembalikan ukuran asli
+var mangroveFiltered = mangroveEroded.focal_max({
+  kernel: kernel,
+  iterations: 1
+});
+
+// Tampilkan hasil setelah filtering
+Map.addLayer(mangroveFiltered, mangroveVis, 'Mangrove (Filtered)', false);
+
+// ================== BAGIAN 17: KONVERSI KE VEKTOR ================== //
+
+// Konversi raster mangrove ke vektor (polygon)
+var mangroveVector = mangroveFiltered.reduceToVectors({
+  geometry: AOI,
+  scale: 10,
+  geometryType: 'polygon',
+  eightConnected: false,
+  labelProperty: 'mangrove',
+  maxPixels: 1e9
+});
+
+// Tampilkan vektor mangrove
+Map.addLayer(mangroveVector, {color: 'red', strokeWidth: 2}, 'Mangrove Polygons', false);
